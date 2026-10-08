@@ -19,7 +19,7 @@ cd "$APP_DIR"
 # The VM's own service account pulls the image (roles/artifactregistry.reader).
 gcloud auth configure-docker "$REGISTRY_HOST" --quiet >/dev/null 2>&1
 
-# Firestore connection string, set by infra/bootstrap.sh as instance metadata.
+# Firestore connection string, set by Terraform (infra/terraform/compute.tf) as instance metadata.
 # It contains no credentials: the app authenticates with the VM's service account.
 MONGO_URL="$(curl -fsS -H 'Metadata-Flavor: Google' "$MD/instance/attributes/mongo-url")"
 

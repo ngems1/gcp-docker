@@ -40,7 +40,7 @@ flowchart LR
 | Path | What it is |
 |---|---|
 | `.github/workflows/deploy-gce.yml` | Build → push to Artifact Registry → deploy over IAP SSH → smoke test |
-| `infra/bootstrap.sh` | One-time GCP setup: APIs, Artifact Registry, Firestore database, WIF pool/provider, service accounts + IAM, VPC/firewall, static IP, VM |
+| `infra/terraform/` | All GCP infrastructure: APIs, VPC/subnet/firewall, static IP, Firestore, Artifact Registry, WIF pool/provider, service accounts + IAM, VM |
 | `infra/vm-startup.sh` | VM startup script that installs Docker + compose plugin |
 | `deploy/docker-compose.yml` | What runs on the VM (`/opt/profile-app`) |
 | `deploy/deploy.sh` | Runs on the VM: writes `.env` (image + Firestore URL from instance metadata), pulls, `compose up`, health + DB check |
@@ -49,13 +49,30 @@ flowchart LR
 ## Setup (once)
 
 1. Push this folder to a GitHub repo.
-2. In Cloud Shell (as a project Owner), from the repo root:
+2. Create the infrastructure with Terraform (>= 1.6, or OpenTofu), logged in as a project Owner
+   (`gcloud auth application-default login`, or just use Cloud Shell, which has Terraform installed):
    ```bash
-   PROJECT_ID=your-project GITHUB_REPO=your-user/your-repo ./infra/bootstrap.sh
+   cd infra/terraform
+   cp terraform.tfvars.example terraform.tfvars   # set project_id and github_repo
+   terraform init
+   terraform plan
+   terraform apply
    ```
-3. Copy the variables it prints into **Settings → Secrets and variables → Actions → Variables**
-   (or run the `gh variable set` lines it prints).
-4. Push to `main` (or run the workflow manually). The job summary shows the app URL.
+3. Set the GitHub repository variables from the outputs:
+   ```bash
+   terraform output -raw gh_variable_commands | bash    # needs the GitHub CLI, logged in
+   ```
+   or copy `terraform output github_variables` into
+   **Settings → Secrets and variables → Actions → Variables**. None of them are secrets.
+4. Push to `main` (or run the workflow manually). The job summary shows the app URL
+   (`terraform output app_url`).
+
+Tear everything down with `terraform destroy`. The Firestore database is deleted too unless
+`protect_database = true`. A destroyed Workload Identity Pool keeps its ID reserved for 30 days,
+so set a new `wif_pool_id` if you re-create within that window.
+
+For a team setup, move the state to a GCS bucket (see the commented `backend "gcs"` block in
+`versions.tf`).
 
 ## Networking
 
@@ -73,7 +90,7 @@ outbound on TLS 443, so it needs no inbound firewall rule.
 
 ## Database: Firestore with MongoDB compatibility
 
-- Enterprise-edition Firestore database `user-account` in `us-east1`, created by `bootstrap.sh`.
+- Enterprise-edition Firestore database `user-account` in `us-east1`, created by Terraform (`infra/terraform/firestore.tf`).
 - The app still uses the official `mongodb` Node.js driver (6.x). Only the connection string changed:
   ```
   mongodb://<uid>.<location>.firestore.goog:443/user-account?loadBalanced=true&tls=true&retryWrites=false
