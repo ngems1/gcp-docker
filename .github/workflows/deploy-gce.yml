@@ -24,6 +24,9 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   ZONE: ${{ vars.GCP_ZONE }}
   VM: ${{ vars.GCE_VM_NAME }}
+  GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+  GCP_DEPLOYER_SA: ${{ vars.GCP_DEPLOYER_SA }}
+  GCP_AR_REPO: ${{ vars.GCP_AR_REPO }}
   IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_AR_REPO }}/profile-app
 
 jobs:
@@ -34,6 +37,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Validate deployment configuration
+        run: |
+          missing=()
+          for name in PROJECT_ID REGION ZONE VM GCP_WIF_PROVIDER GCP_DEPLOYER_SA GCP_AR_REPO; do
+            if [[ -z "${!name}" ]]; then
+              missing+=("$name")
+            fi
+          done
+          if ((${#missing[@]})); then
+            echo "::error::Missing GitHub Actions repository variables: ${missing[*]}"
+            echo "::error::Run 'terraform output -raw gh_variable_commands | bash' from infra/terraform to configure them."
+            exit 1
+          fi
 
       # 1) GitHub OIDC token -> GCP STS -> short-lived token for the deployer SA.
       #    No JSON key anywhere.
