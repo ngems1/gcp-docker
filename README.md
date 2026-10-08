@@ -76,6 +76,8 @@ For a team setup, move the state to a GCS bucket (see the commented `backend "gc
 
 ## Networking
 
+![Networking diagram](docs/networking-diagram.svg)
+
 | Resource | Name | Settings |
 |---|---|---|
 | VPC | `profile-app-vpc` | custom subnet mode (no default-network open rules) |
