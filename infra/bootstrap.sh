@@ -21,7 +21,8 @@ MACHINE_TYPE="${MACHINE_TYPE:-e2-small}"
 POOL_ID="${POOL_ID:-github-pool}"
 PROVIDER_ID="${PROVIDER_ID:-github-provider}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
-SECRET_ID="${SECRET_ID:-mongo-root-password}"
+FIRESTORE_DB="${FIRESTORE_DB:-user-account}"            # must match the app's MONGO_DB_NAME
+FIRESTORE_LOCATION="${FIRESTORE_LOCATION:-$REGION}"
 NETWORK="${NETWORK:-profile-app-vpc}"
 SUBNET="${SUBNET:-profile-app-subnet}"
 SUBNET_RANGE="${SUBNET_RANGE:-10.10.0.0/24}"
@@ -51,7 +52,7 @@ gcloud services enable \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   sts.googleapis.com \
-  secretmanager.googleapis.com \
+  firestore.googleapis.com \
   iap.googleapis.com \
   oslogin.googleapis.com
 
@@ -66,17 +67,25 @@ ignore_exists gcloud iam service-accounts create "$DEPLOYER_SA_NAME" \
 ignore_exists gcloud iam service-accounts create "$VM_SA_NAME" \
   --display-name="Profile app VM runtime"
 
-echo ">> Mongo root password in Secret Manager"
-if ! gcloud secrets describe "$SECRET_ID" >/dev/null 2>&1; then
-  openssl rand -hex 24 | tr -d '\n' | \
-    gcloud secrets create "$SECRET_ID" --replication-policy=automatic --data-file=-
+echo ">> Firestore database (Enterprise edition, MongoDB compatibility)"
+if ! gcloud firestore databases describe --database="$FIRESTORE_DB" >/dev/null 2>&1; then
+  gcloud firestore databases create --database="$FIRESTORE_DB" \
+    --location="$FIRESTORE_LOCATION" --edition=enterprise \
+    --enable-mongodb-compatible-data-access
 fi
+read -r FS_UID FS_LOCATION < <(gcloud firestore databases describe \
+  --database="$FIRESTORE_DB" --format='value(uid,locationId)')
+# No username/password: the driver gets an ID token from the VM metadata server
+# (audience FIRESTORE) and authenticates as the VM's service account.
+MONGO_URL="mongodb://${FS_UID}.${FS_LOCATION}.firestore.goog:443/${FIRESTORE_DB}?loadBalanced=true&tls=true&retryWrites=false&authMechanism=MONGODB-OIDC&authMechanismProperties=ENVIRONMENT:gcp,TOKEN_RESOURCE:FIRESTORE"
 
-echo ">> VM service account permissions (pull images, read secret, write logs)"
+echo ">> VM service account permissions (pull images, use the one database, write logs)"
 gcloud artifacts repositories add-iam-policy-binding "$AR_REPO" --location="$REGION" \
   --member="serviceAccount:${VM_SA}" --role="roles/artifactregistry.reader" >/dev/null
-gcloud secrets add-iam-policy-binding "$SECRET_ID" \
-  --member="serviceAccount:${VM_SA}" --role="roles/secretmanager.secretAccessor" >/dev/null
+# read/write documents - only in this Firestore database (IAM condition)
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${VM_SA}" --role="roles/datastore.user" \
+  --condition="expression=resource.name==\"projects/${PROJECT_ID}/databases/${FIRESTORE_DB}\",title=only-${FIRESTORE_DB}-db" >/dev/null
 for role in roles/logging.logWriter roles/monitoring.metricWriter; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${VM_SA}" --role="$role" --condition=None >/dev/null
@@ -87,8 +96,8 @@ echo ">> Network: dedicated VPC + subnet"
 # permissive default-network rules (default-allow-ssh/rdp/icmp from 0.0.0.0/0).
 ignore_exists gcloud compute networks create "$NETWORK" \
   --subnet-mode=custom --bgp-routing-mode=regional
-# Private Google Access lets the VM keep reaching Artifact Registry / Secret Manager
-# if you later remove its public IP (then add Cloud NAT for Docker Hub pulls).
+# Private Google Access lets the VM keep reaching Artifact Registry / Firestore
+# if you later remove its public IP (add Cloud NAT too, for apt/Docker installs).
 ignore_exists gcloud compute networks subnets create "$SUBNET" \
   --network="$NETWORK" --region="$REGION" --range="$SUBNET_RANGE" \
   --enable-private-ip-google-access
@@ -123,6 +132,14 @@ if ! gcloud compute instances describe "$VM_NAME" --zone="$ZONE" >/dev/null 2>&1
     --metadata=enable-oslogin=TRUE \
     --metadata-from-file=startup-script="${SCRIPT_DIR}/vm-startup.sh"
 fi
+
+# Store the Firestore connection string as VM metadata (it holds no secret).
+# Passed from a file because the value contains commas.
+MONGO_URL_FILE="$(mktemp)"
+printf '%s' "$MONGO_URL" > "$MONGO_URL_FILE"
+gcloud compute instances add-metadata "$VM_NAME" --zone="$ZONE" \
+  --metadata-from-file=mongo-url="$MONGO_URL_FILE" >/dev/null
+rm -f "$MONGO_URL_FILE"
 
 echo ">> Workload Identity Federation (GitHub OIDC)"
 ignore_exists gcloud iam workload-identity-pools create "$POOL_ID" \
@@ -183,7 +200,9 @@ Or with the GitHub CLI:
   gh variable set GCP_AR_REPO      -R ${GITHUB_REPO} -b "${AR_REPO}"
   gh variable set GCE_VM_NAME      -R ${GITHUB_REPO} -b "${VM_NAME}"
 
-No secrets or JSON keys are needed in GitHub.
+No secrets or JSON keys are needed in GitHub, and no database password exists.
+Firestore connection string (stored as VM metadata "mongo-url"):
+  ${MONGO_URL}
 App URL after first deploy: http://${VM_IP}
 =====================================================================
 OUT
