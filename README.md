@@ -39,40 +39,74 @@ flowchart LR
 
 | Path | What it is |
 |---|---|
-| `.github/workflows/deploy-gce.yml` | Build → push to Artifact Registry → deploy over IAP SSH → smoke test |
-| `infra/terraform/` | All GCP infrastructure: APIs, VPC/subnet/firewall, static IP, Firestore, Artifact Registry, WIF pool/provider, service accounts + IAM, VM |
+| `.github/workflows/deploy-gce.yml` | App: build → push to Artifact Registry → deploy over IAP SSH → smoke test |
+| `.github/workflows/terraform.yml` | Infra: plan on PRs (posted as a comment) → approve → apply on `main` |
+| `infra/bootstrap/` | Run once by hand: state bucket, GitHub OIDC trust, `tf-plan` / `tf-apply` service accounts |
+| `infra/terraform/` | App infrastructure, applied by the pipeline: APIs, VPC/subnet/firewall, static IP, Firestore, Artifact Registry, deployer + VM service accounts and IAM, VM |
 | `infra/vm-startup.sh` | VM startup script that installs Docker + compose plugin |
 | `deploy/docker-compose.yml` | What runs on the VM (`/opt/profile-app`) |
 | `deploy/deploy.sh` | Runs on the VM: writes `.env` (image + Firestore URL from instance metadata), pulls, `compose up`, health + DB check |
 | `docker-compose.yaml` | Local development only: a MongoDB container + mongo-express |
 
+## CI/CD
+
+```mermaid
+flowchart LR
+  pr[Pull request<br/>infra/terraform/**] --> plan1[terraform plan<br/>tf-plan, read-only] --> comment[Plan posted<br/>as PR comment]
+  merge[Merge to main] --> plan2[terraform plan<br/>tf-plan] --> gate{{Approve in<br/>environment 'infra'}} --> apply[terraform apply<br/>saved plan, tf-apply]
+  push[Push to main<br/>app/** or deploy/**] --> deploy[deploy-gce.yml<br/>gh-deployer]
+```
+
+Each job logs in with its own Workload Identity provider and service account:
+
+| Job | Provider accepts tokens from | Service account | Can |
+|---|---|---|---|
+| Terraform plan | PRs in this repo, or `main` | `tf-plan` | read the project and the state (plan runs with `-lock=false`) |
+| Terraform apply | `main` **and** environment `infra` | `tf-apply` | create/change everything in `infra/terraform` |
+| App deploy | `main` | `gh-deployer` | push images, SSH to the one VM |
+
+Each provider stamps its tokens with `attribute.purpose`, and each service account trusts
+only its own purpose, so a pull-request token can never be used to apply or deploy.
+
 ## Setup (once)
 
-1. Push this folder to a GitHub repo.
-2. Create the infrastructure with Terraform (>= 1.6, or OpenTofu), logged in as a project Owner
-   (`gcloud auth application-default login`, or just use Cloud Shell, which has Terraform installed):
+1. **Push this folder to a GitHub repo.**
+2. **Bootstrap** (Cloud Shell or your machine, as a project Owner, about 2 minutes):
    ```bash
-   cd infra/terraform
+   cd infra/bootstrap
    cp terraform.tfvars.example terraform.tfvars   # set project_id and github_repo
-   terraform init
-   terraform plan
-   terraform apply
+   terraform init && terraform apply
    ```
-3. Set the GitHub repository variables from the outputs:
+3. **Configure GitHub** with the GitHub CLI logged in:
    ```bash
-   terraform output -raw gh_variable_commands | bash    # needs the GitHub CLI, logged in
+   terraform output -raw gh_setup_commands | bash
    ```
-   or copy `terraform output github_variables` into
-   **Settings → Secrets and variables → Actions → Variables**. None of them are secrets.
-4. Push to `main` (or run the workflow manually). The job summary shows the app URL
-   (`terraform output app_url`).
+   This sets all repository variables (none are secrets), protects `main` so changes go through
+   pull requests, and creates the `infra` environment with you as the required reviewer.
+   Required reviewers and branch protection on a **private** repo need a paid GitHub plan
+   (Pro/Team); they are free on public repos.
+4. **First infrastructure apply:** run the **Terraform** workflow (Actions tab → Run workflow),
+   read the plan in the run summary, then approve the `apply` job.
+5. **First app deploy:** run the **Build & deploy to GCE** workflow. Later pushes deploy by themselves.
 
-Tear everything down with `terraform destroy`. The Firestore database is deleted too unless
-`protect_database = true`. A destroyed Workload Identity Pool keeps its ID reserved for 30 days,
-so set a new `wif_pool_id` if you re-create within that window.
+Optional but recommended: commit `infra/terraform/.terraform.lock.hcl` (create it with
+`terraform init -backend=false` in that folder) so CI always uses the same provider versions.
 
-For a team setup, move the state to a GCS bucket (see the commented `backend "gcs"` block in
-`versions.tf`).
+### Changing infrastructure
+
+Open a pull request that changes `infra/terraform/`. The plan appears as a comment on the PR.
+Merge it, then approve the `apply` job in the run. Apply uses the exact plan you approved;
+if the state changed in between, Terraform refuses and nothing is changed.
+
+### Tearing down
+
+The pipeline never destroys. From your machine:
+```bash
+cd infra/terraform && terraform init -backend-config="bucket=<project>-tfstate"
+terraform destroy -var project_id=<project> -var wif_pool_name=<GCP_WIF_POOL value>
+cd ../bootstrap && terraform destroy   # remove prevent_destroy on the bucket first
+```
+A deleted Workload Identity Pool ID stays reserved for 30 days.
 
 ## Networking
 

@@ -3,22 +3,6 @@ variable "project_id" {
   type        = string
 }
 
-variable "github_repo" {
-  description = "GitHub repository allowed to deploy, as owner/repo."
-  type        = string
-
-  validation {
-    condition     = can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repo))
-    error_message = "github_repo must look like owner/repo."
-  }
-}
-
-variable "deploy_branch" {
-  description = "Only workflow runs on this branch can get GCP credentials."
-  type        = string
-  default     = "main"
-}
-
 variable "region" {
   description = "Region for the subnet, static IP, Artifact Registry and Firestore."
   type        = string
@@ -67,14 +51,12 @@ variable "protect_database" {
   default     = false
 }
 
-variable "wif_pool_id" {
-  description = "Workload Identity Pool ID. Deleted pools keep their ID reserved for 30 days, so change this if you destroy and re-create within that window."
+variable "wif_pool_name" {
+  description = "Full name of the Workload Identity Pool created by infra/bootstrap (GitHub variable GCP_WIF_POOL), e.g. projects/123/locations/global/workloadIdentityPools/github."
   type        = string
-  default     = "github-pool"
-}
 
-variable "wif_provider_id" {
-  description = "Workload Identity Pool provider ID."
-  type        = string
-  default     = "github-provider"
+  validation {
+    condition     = can(regex("^projects/[0-9]+/locations/global/workloadIdentityPools/[a-z0-9-]+$", var.wif_pool_name))
+    error_message = "wif_pool_name must be the full pool name: projects/<number>/locations/global/workloadIdentityPools/<id>."
+  }
 }

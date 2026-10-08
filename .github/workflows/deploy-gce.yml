@@ -82,6 +82,8 @@ jobs:
                 --format='get(networkInterfaces[0].accessConfigs[0].natIP)')"
           curl -fsS --retry 10 --retry-delay 3 --retry-all-errors "http://${IP}/healthz"
           curl -fsS "http://${IP}/get-profile"   # end-to-end: app -> Firestore
-          echo "### Deployed :rocket:" >> "$GITHUB_STEP_SUMMARY"
-          echo "- Image: \`${IMAGE}:${GITHUB_SHA}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "- URL: http://${IP}" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Deployed :rocket:"
+            echo "- Image: \`${IMAGE}:${GITHUB_SHA}\`"
+            echo "- URL: http://${IP}"
+          } >> "$GITHUB_STEP_SUMMARY"

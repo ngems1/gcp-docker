@@ -8,15 +8,13 @@ terraform {
     }
   }
 
-  # Remote state (recommended once it works). Create the bucket once:
-  #   gcloud storage buckets create gs://<project>-tfstate --location=us-east1 \
-  #     --uniform-bucket-level-access && gcloud storage buckets update gs://<project>-tfstate --versioning
-  # then uncomment, set the bucket, and run `terraform init -migrate-state`.
-  #
-  # backend "gcs" {
-  #   bucket = "<project>-tfstate"
-  #   prefix = "profile-app"
-  # }
+  # State lives in the bucket created by infra/bootstrap. The bucket name is
+  # passed at init time (it differs per project):
+  #   terraform init -backend-config="bucket=<project>-tfstate"
+  # GitHub Actions does this with the TF_STATE_BUCKET variable.
+  backend "gcs" {
+    prefix = "profile-app/main"
+  }
 }
 
 provider "google" {
