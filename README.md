@@ -52,6 +52,20 @@ flowchart LR
    (or run the `gh variable set` lines it prints).
 4. Push to `main` (or run the workflow manually). The job summary shows the app URL.
 
+## Networking
+
+| Resource | Name | Settings |
+|---|---|---|
+| VPC | `profile-app-vpc` | custom subnet mode (no default-network open rules) |
+| Subnet | `profile-app-subnet` | `10.10.0.0/24`, `us-east1`, Private Google Access on |
+| Firewall | `profile-app-allow-http` | ingress `tcp:80` from `0.0.0.0/0` → VM service account |
+| Firewall | `profile-app-allow-iap-ssh` | ingress `tcp:22` from `35.235.240.0/20` (IAP) → VM service account |
+| Firewall | implied | deny all other ingress, allow all egress |
+| Address | `profile-app-vm-ip` | regional static external IP on nic0; VM internal IP `10.10.0.10` |
+
+Ports 3000, 8081 and 27017 are never exposed: Docker only publishes host `:80 → my-app:3000`,
+MongoDB stays on the compose bridge network, and mongo-express binds to `127.0.0.1`.
+
 ## Operating
 
 - mongo-express is bound to the VM's localhost. To open it:

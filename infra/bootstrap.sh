@@ -22,6 +22,10 @@ POOL_ID="${POOL_ID:-github-pool}"
 PROVIDER_ID="${PROVIDER_ID:-github-provider}"
 DEPLOY_BRANCH="${DEPLOY_BRANCH:-main}"
 SECRET_ID="${SECRET_ID:-mongo-root-password}"
+NETWORK="${NETWORK:-profile-app-vpc}"
+SUBNET="${SUBNET:-profile-app-subnet}"
+SUBNET_RANGE="${SUBNET_RANGE:-10.10.0.0/24}"
+VM_INTERNAL_IP="${VM_INTERNAL_IP:-10.10.0.10}"
 
 DEPLOYER_SA_NAME="gh-deployer"
 VM_SA_NAME="profile-app-vm"
@@ -78,17 +82,30 @@ for role in roles/logging.logWriter roles/monitoring.metricWriter; do
     --member="serviceAccount:${VM_SA}" --role="$role" --condition=None >/dev/null
 done
 
-echo ">> Firewall rules"
-# SSH only from Google's IAP range - no public port 22.
-ignore_exists gcloud compute firewall-rules create allow-iap-ssh \
-  --network=default --direction=INGRESS --action=ALLOW --rules=tcp:22 \
-  --source-ranges=35.235.240.0/20 --target-tags=profile-app
-ignore_exists gcloud compute firewall-rules create allow-profile-app-http \
-  --network=default --direction=INGRESS --action=ALLOW --rules=tcp:80 \
-  --source-ranges=0.0.0.0/0 --target-tags=profile-app
+echo ">> Network: dedicated VPC + subnet"
+# Custom-mode VPC: no auto-created subnets in every region, and none of the
+# permissive default-network rules (default-allow-ssh/rdp/icmp from 0.0.0.0/0).
+ignore_exists gcloud compute networks create "$NETWORK" \
+  --subnet-mode=custom --bgp-routing-mode=regional
+# Private Google Access lets the VM keep reaching Artifact Registry / Secret Manager
+# if you later remove its public IP (then add Cloud NAT for Docker Hub pulls).
+ignore_exists gcloud compute networks subnets create "$SUBNET" \
+  --network="$NETWORK" --region="$REGION" --range="$SUBNET_RANGE" \
+  --enable-private-ip-google-access
 
-echo ">> Static external IP"
-ignore_exists gcloud compute addresses create "${VM_NAME}-ip" --region="$REGION"
+echo ">> Firewall rules (target = the VM's service account, not a network tag)"
+# Everything else inbound hits the VPC's implied deny-all ingress rule.
+# SSH only from Google's IAP range - no public port 22.
+ignore_exists gcloud compute firewall-rules create profile-app-allow-iap-ssh \
+  --network="$NETWORK" --direction=INGRESS --action=ALLOW --rules=tcp:22 \
+  --source-ranges=35.235.240.0/20 --target-service-accounts="$VM_SA" --priority=1000
+# The app, published by Docker on host port 80.
+ignore_exists gcloud compute firewall-rules create profile-app-allow-http \
+  --network="$NETWORK" --direction=INGRESS --action=ALLOW --rules=tcp:80 \
+  --source-ranges=0.0.0.0/0 --target-service-accounts="$VM_SA" --priority=1000
+
+echo ">> Static external IP (survives VM stop/recreate)"
+ignore_exists gcloud compute addresses create "${VM_NAME}-ip" --region="$REGION" --network-tier=PREMIUM
 VM_IP="$(gcloud compute addresses describe "${VM_NAME}-ip" --region="$REGION" --format='value(address)')"
 
 echo ">> VM"
@@ -99,7 +116,8 @@ if ! gcloud compute instances describe "$VM_NAME" --zone="$ZONE" >/dev/null 2>&1
     --image-family=debian-12 --image-project=debian-cloud \
     --boot-disk-size=20GB \
     --service-account="$VM_SA" --scopes=cloud-platform \
-    --tags=profile-app \
+    --network="$NETWORK" --subnet="$SUBNET" \
+    --private-network-ip="$VM_INTERNAL_IP" \
     --address="$VM_IP" \
     --shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring \
     --metadata=enable-oslogin=TRUE \
